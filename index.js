@@ -373,6 +373,13 @@ function hiddenByUs(node) {
 }
 
 /** @returns {{ kind: 'skip'|'layer'|'float', rect?: DOMRect }} */
+function hasLiveChild(node) {
+    for (const c of node.querySelectorAll('*')) {
+        if (getComputedStyle(c).pointerEvents !== 'none') return true;
+    }
+    return false;
+}
+
 function classify(node, cs, fixed) {
     const r = node.getBoundingClientRect();
     const vwArea = innerWidth * innerHeight;
@@ -385,7 +392,7 @@ function classify(node, cs, fixed) {
     if (!node.hasAttribute(LIFT_ATTR) && (r.right < 4 || r.bottom < 4 || r.left > innerWidth - 4 || r.top > innerHeight - 4)) return { kind: 'skip' };
     if (cs.visibility === 'hidden' && !ours) return { kind: 'skip' };
     if (Number(cs.opacity) < 0.05) return { kind: 'skip' };
-    if (passThrough) return { kind: 'skip' };
+    if (passThrough) return hasLiveChild(node) ? { kind: 'float', rect: r } : { kind: 'skip' };
     return { kind: 'float', rect: r };
 }
 
@@ -410,6 +417,10 @@ function discover() {
         }
     };
     visit(document.body, 0, false);
+    for (const child of document.documentElement.children) {
+        if (child === document.body || child === document.head) continue;
+        visit({ children: [child] }, 1, false);
+    }
     return out;
 }
 
