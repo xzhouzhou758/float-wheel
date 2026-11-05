@@ -51,12 +51,8 @@ function watchSize(node, rect) {
     baseSize.set(node, { w: rect.width, h: rect.height });
     sizeWatch?.observe(node);
 }
-const SCAN_MS = 1800;
-// Background scans may use at most ~1% of the main thread: on a heavy page (long chat, many
-// card iframes) one scan can cost 100ms+, so the next one waits cost × SCAN_BUDGET.
-const SCAN_BUDGET = 100;
-const SCAN_MAX_MS = 30000;
-let scanCost = 0;
+const STARTUP_SCANS_MS = [3000, 10000, 30000];
+const DOT_MS = 2000;
 const NOTICE_ATTR = 'data-fwheel-notice';
 const AWAY_ATTR = 'data-fwheel-away';
 // An element that first shows up this soon after a click / key press is a popup, not a resident button.
@@ -435,11 +431,6 @@ let model = { specs: [], generic: [] };
 const seen = new Map(); // generic key → { gone }
 
 function rescan() {
-    const t0 = performance.now();
-    try { scanNow(); } finally { scanCost = performance.now() - t0; }
-}
-
-function scanNow() {
     const specs = [];
     for (const spec of SPECS) {
         let found = null;
@@ -1288,24 +1279,25 @@ function boot() {
             }
         }).observe(document.body, { childList: true, subtree: true });
     }
-    let pending = 0;
-    let lastScan = 0;
-    let soonAt = 0;
-    const gap = () => Math.min(SCAN_MAX_MS, Math.max(SCAN_MS, scanCost * SCAN_BUDGET));
-    const tick = () => {
-        if (!document.hidden) { rescan(); lastScan = Date.now(); }
-        setTimeout(tick, gap());
-    };
-    const soon = () => {
-        // A new body child is worth a quick look, but never faster than the budget allows.
-        const at = Math.max(Date.now() + 250, lastScan + Math.min(gap(), scanCost * 20));
-        if (pending && soonAt <= at) return;
-        clearTimeout(pending);
-        soonAt = at;
-        pending = setTimeout(() => { pending = 0; rescan(); lastScan = Date.now(); }, at - Date.now());
-    };
-    new MutationObserver(soon).observe(document.body, { childList: true });
-    setTimeout(tick, gap());
+    // Floats are created when the page loads (some only after the chat is in), so the page is
+    // scanned during start-up and on chat change only; opening the ring or the manager scans
+    // again. A full scan forces style + layout of the whole page, which costs 100ms+ on a long
+    // chat, so nothing scans on a timer: the timer only refreshes the orb's dot.
+    for (const ms of STARTUP_SCANS_MS) setTimeout(rescan, ms);
+    try {
+        const c = ctx();
+        const changed = c?.eventTypes?.CHAT_CHANGED;
+        if (changed && c.eventSource?.on) c.eventSource.on(changed, () => { setTimeout(rescan, 1000); setTimeout(rescan, 5000); });
+    } catch { /* optional */ }
+    // Light tick: the orb's dot, and specs shown only while their own menu is open (desk pet).
+    let activeSig = '';
+    setInterval(() => {
+        if (document.hidden) return;
+        paintDot();
+        const sig = model.specs.filter(({ spec }) => spec.showWhileActive)
+            .map(({ spec }) => { try { return spec.active() ? 1 : 0; } catch { return 0; } }).join('');
+        if (sig !== activeSig) { activeSig = sig; applyHideRules(); }
+    }, DOT_MS);
 }
 
 try {
