@@ -52,6 +52,11 @@ function watchSize(node, rect) {
     sizeWatch?.observe(node);
 }
 const SCAN_MS = 1800;
+// Background scans may use at most ~1% of the main thread: on a heavy page (long chat, many
+// card iframes) one scan can cost 100ms+, so the next one waits cost × SCAN_BUDGET.
+const SCAN_BUDGET = 100;
+const SCAN_MAX_MS = 30000;
+let scanCost = 0;
 const NOTICE_ATTR = 'data-fwheel-notice';
 const AWAY_ATTR = 'data-fwheel-away';
 // An element that first shows up this soon after a click / key press is a popup, not a resident button.
@@ -374,7 +379,9 @@ function hiddenByUs(node) {
 
 /** @returns {{ kind: 'skip'|'layer'|'float', rect?: DOMRect }} */
 function hasLiveChild(node) {
+    let n = 0;
     for (const c of node.querySelectorAll('*')) {
+        if (++n > 240) break;
         if (getComputedStyle(c).pointerEvents !== 'none') return true;
     }
     return false;
@@ -428,6 +435,11 @@ let model = { specs: [], generic: [] };
 const seen = new Map(); // generic key → { gone }
 
 function rescan() {
+    const t0 = performance.now();
+    try { scanNow(); } finally { scanCost = performance.now() - t0; }
+}
+
+function scanNow() {
     const specs = [];
     for (const spec of SPECS) {
         let found = null;
@@ -1277,9 +1289,23 @@ function boot() {
         }).observe(document.body, { childList: true, subtree: true });
     }
     let pending = 0;
-    const soon = () => { clearTimeout(pending); pending = setTimeout(rescan, 250); };
+    let lastScan = 0;
+    let soonAt = 0;
+    const gap = () => Math.min(SCAN_MAX_MS, Math.max(SCAN_MS, scanCost * SCAN_BUDGET));
+    const tick = () => {
+        if (!document.hidden) { rescan(); lastScan = Date.now(); }
+        setTimeout(tick, gap());
+    };
+    const soon = () => {
+        // A new body child is worth a quick look, but never faster than the budget allows.
+        const at = Math.max(Date.now() + 250, lastScan + Math.min(gap(), scanCost * 20));
+        if (pending && soonAt <= at) return;
+        clearTimeout(pending);
+        soonAt = at;
+        pending = setTimeout(() => { pending = 0; rescan(); lastScan = Date.now(); }, at - Date.now());
+    };
     new MutationObserver(soon).observe(document.body, { childList: true });
-    setInterval(() => { if (!document.hidden) rescan(); }, SCAN_MS);
+    setTimeout(tick, gap());
 }
 
 try {
